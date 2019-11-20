@@ -8,6 +8,7 @@ use sdl2::pixels::Color;
 
 use wrapped2d::b2;
 use wrapped2d::user_data::NoUserData;
+use wrapped2d::collisions::shapes::*;
 
 use crate::throttler::Throttler;
 
@@ -58,13 +59,13 @@ fn main() {
     };
 
     let body_handle = world.create_body(&def);
-
+    let fixture_handle;
+ 
     {
         let mut body = world.body_mut(body_handle);
 
         let shape = b2::PolygonShape::new_box(0.5, 0.5);
-        let fixture_handle = body.create_fast_fixture(&shape, 2.0);
-        let fixture = body.fixture(fixture_handle);
+        fixture_handle = body.create_fast_fixture(&shape, 2.0);
     }
 
     let throttler = Throttler::new(Duration::from_millis(1000 / 30));
@@ -127,6 +128,22 @@ fn main() {
         let body = world.body(body_handle);
 
         let body_pos = body.position();
+        let fixture = body.fixture(fixture_handle);
+        let shape_type = fixture.shape_type();
+        let shape = fixture.shape();
+        match shape {
+            UnknownShape::Polygon(polygon) => {
+                canvas.set_draw_color(white);
+                let body_point = sdl2_point(*body_pos);
+                canvas.draw_rect(Rect::new(body_point.x,
+                                           body_point.y,
+                                           SQUARE_WIDTH * ZOOM as u32,
+                                           SQUARE_HEIGHT * ZOOM as u32));
+
+            }
+
+            _ => panic!("Unexpected shape!"),
+        }
 
         canvas.set_draw_color(red);
         let sdl_left = sdl2_point(left_point);
@@ -141,13 +158,6 @@ fn main() {
         canvas.draw_point(sdl_right);
         canvas.draw_line(sdl_left, sdl_force_left);
         canvas.draw_line(sdl_right, sdl_force_right);
-
-        canvas.set_draw_color(white);
-        let body_point = sdl2_point(*body_pos);
-        canvas.draw_rect(Rect::new(body_point.x,
-                                   body_point.y,
-                                   SQUARE_WIDTH * ZOOM as u32,
-                                   SQUARE_HEIGHT * ZOOM as u32));
 
         canvas.present();
 
