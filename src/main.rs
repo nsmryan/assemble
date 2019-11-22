@@ -1,14 +1,17 @@
 mod throttler;
 
 use std::time::Duration;
+use std::ops::Mul;
 
 use sdl2::event::Event;
 use sdl2::rect::{Rect, Point};
 use sdl2::pixels::Color;
+use sdl2::keyboard::Keycode;
 
 use wrapped2d::b2;
 use wrapped2d::user_data::NoUserData;
-use wrapped2d::collisions::shapes::*;
+use wrapped2d::collision::shapes::*;
+use wrapped2d::common::math::*;
 
 use crate::throttler::Throttler;
 
@@ -45,7 +48,8 @@ fn main() {
 
     let start_pos = (10, 10);
     
-    let mut force_multiplier = 0.0;
+    let mut force_x = 0.0;
+    let mut force_y = 0.0;
     let mut linear_damping = 0.97;
 
     let gravity = b2::Vec2 { x: 0.0, y: 0.0 };
@@ -85,11 +89,21 @@ fn main() {
                 }
 
                 Event::KeyDown{keycode, keymod, ..} => {
-                    force_multiplier = 1.0;
+                    if keycode == Some(Keycode::A) {
+                        force_x = 1.0;
+                    }
+                    if keycode == Some(Keycode::S) {
+                        force_y = 1.0;
+                    }
                 }
 
                 Event::KeyUp{keycode, keymod, ..} => {
-                    force_multiplier = 0.0;
+                    if keycode == Some(Keycode::A) {
+                        force_x = 0.0;
+                    } 
+                    if keycode == Some(Keycode::S) {
+                        force_y = 0.0;
+                    }
                 }
 
                 Event::MouseMotion{x, y, ..} => {
@@ -106,18 +120,20 @@ fn main() {
             }
         }
 
-        let force;
+        let left_force;
+        let right_force;
         let left_point;
         let right_point;
         {
             let mut body = world.body_mut(body_handle);
-            force = body.world_vector(&b2::Vec2 { x: 0.0 * force_multiplier, y: 1.0 * force_multiplier });
-            left_point = body.world_point(&b2::Vec2 { x: 0.0, y: 0.0 });
-            right_point = body.world_point(&b2::Vec2 { x: 0.5, y: 0.0 });
+            left_force = body.world_vector(&b2::Vec2 { x: 0.0, y: 1.0 * force_x });
+            right_force = body.world_vector(&b2::Vec2 { x: 0.0, y: 1.0 * force_y });
+            left_point = body.world_point(&b2::Vec2 { x: -0.5, y: -0.5 });
+            right_point = body.world_point(&b2::Vec2 { x: 0.5, y: -0.5 });
 
             body.set_linear_damping(linear_damping);
-            body.apply_force(&force, &left_point, true);
-            body.apply_force(&force, &right_point, true);
+            body.apply_force(&left_force, &left_point, true);
+            body.apply_force(&right_force, &right_point, true);
         }
 
         world.step(TIME_STEP, VELOCITY_ITERATIONS, POSITION_ITERATIONS);
@@ -126,20 +142,35 @@ fn main() {
         canvas.clear();
 
         let body = world.body(body_handle);
+        let body_transform = Transform {
+            pos: *body.position(),
+            rot: Rot::from_angle(body.angle()),
+        };
 
+        canvas.set_draw_color(white);
         let body_pos = body.position();
         let fixture = body.fixture(fixture_handle);
         let shape_type = fixture.shape_type();
         let shape = fixture.shape();
-        match shape {
+        match &*shape {
             UnknownShape::Polygon(polygon) => {
-                canvas.set_draw_color(white);
-                let body_point = sdl2_point(*body_pos);
-                canvas.draw_rect(Rect::new(body_point.x,
-                                           body_point.y,
-                                           SQUARE_WIDTH * ZOOM as u32,
-                                           SQUARE_HEIGHT * ZOOM as u32));
+                let first_vertex = body_transform.mul(*polygon.vertex(0));
+                //let first_vertex = first_vertex + body.position();
+                let first_point = sdl2_point(first_vertex);;
+                let mut prev_point = first_point;
+                for index in 0..polygon.vertex_count() {
+                    let vertex = body_transform.mul(*polygon.vertex(index));
+                    //let vertex = vertex + body.position();
 
+                    let point = sdl2_point(vertex);
+                    canvas.draw_line(prev_point, point);
+                    prev_point = point;
+                }
+
+                let last_vertex = polygon.vertex(polygon.vertex_count() - 1);
+                let last_vertex = body_transform.mul(*last_vertex);
+                let last_point = sdl2_point(last_vertex);
+                canvas.draw_line(first_point, last_point);
             }
 
             _ => panic!("Unexpected shape!"),
@@ -150,10 +181,10 @@ fn main() {
         let sdl_right = sdl2_point(right_point);
 
         canvas.set_draw_color(green);
-        let sdl_force_left = sdl2_point(b2::Vec2 { x: left_point.x + force.x,
-                                              y: left_point.y + force.y });
-        let sdl_force_right = sdl2_point(b2::Vec2 { x: right_point.x + force.x,
-                                                       y: right_point.y + force.y });
+        let sdl_force_left = sdl2_point(b2::Vec2 { x: left_point.x + -left_force.x,
+                                              y: left_point.y + -left_force.y });
+        let sdl_force_right = sdl2_point(b2::Vec2 { x: right_point.x + -right_force.x,
+                                                       y: right_point.y + -right_force.y });
         canvas.draw_point(sdl_left);
         canvas.draw_point(sdl_right);
         canvas.draw_line(sdl_left, sdl_force_left);
