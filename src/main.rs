@@ -2,11 +2,13 @@ mod throttler;
 
 use std::time::Duration;
 use std::ops::Mul;
+use std::f32;
 
 use sdl2::event::Event;
 use sdl2::rect::{Rect, Point};
 use sdl2::pixels::Color;
 use sdl2::keyboard::Keycode;
+use sdl2::render::{Canvas, RenderTarget};
 
 use wrapped2d::b2;
 use wrapped2d::user_data::NoUserData;
@@ -19,10 +21,8 @@ use crate::throttler::Throttler;
 const SCREEN_WIDTH: u32 = 600;
 const SCREEN_HEIGHT: u32 = 600;
 
-const SQUARE_WIDTH: u32 = 1;
-const SQUARE_HEIGHT: u32 = 1;
-
 const ZOOM: f32 = 40.0;
+const GOAL_RADIUS: f32 = 0.5;
 
 const WORLD_WIDTH: f32 = SCREEN_WIDTH as f32 / ZOOM;
 const WORLD_HEIGHT: f32 = SCREEN_HEIGHT as f32 / ZOOM;
@@ -36,6 +36,24 @@ type World = b2::World<NoUserData>;
 
 fn sdl2_point(point: b2::Vec2) -> Point {
     return Point::new((point.x * ZOOM) as i32, (point.y * ZOOM) as i32);
+}
+
+pub fn draw_circle<S>(canvas: &mut Canvas<S>, position: Vec2, radius: f32, num_points: usize)
+    where S: RenderTarget {
+        let mut points = Vec::new();
+
+        for index in 0..num_points {
+            let radians = (2.0 * f32::consts::PI / num_points as f32) * index as f32;
+
+            let offset = Vec2::from([f32::cos(radians) * radius,
+                                     f32::sin(radians) * radius]);
+            let edge_pos = position + offset;
+
+            points.push(sdl2_point(edge_pos));
+        }
+
+        points.push(points[0]);
+        canvas.draw_lines(&points[..]);
 }
 
 fn main() {
@@ -53,13 +71,13 @@ fn main() {
     
     let mut force_x = 0.0;
     let mut force_y = 0.0;
-    let mut linear_damping = 0.97;
-    let mut angular_damping = 0.97;
+    let linear_damping = 0.97;
+    let angular_damping = 0.97;
 
     let gravity = b2::Vec2 { x: 0.0, y: 0.0 };
     let mut world = b2::World::<NoUserData>::new(&gravity);
 
-    let mut def = b2::BodyDef {
+    let def = b2::BodyDef {
         body_type: b2::BodyType::Dynamic,
         position: b2::Vec2 { x: start_pos.0 as f32, y: start_pos.1 as f32 },
         linear_damping,
@@ -86,8 +104,29 @@ fn main() {
         fixture_handle = body.create_fixture(&shape, &mut body_fixture);
     }
 
+    // Create goal
+    let goal_def = b2::BodyDef {
+        position: b2::Vec2 { x: WORLD_WIDTH / 2.0, y: WORLD_HEIGHT - 2.0, },
+        .. b2::BodyDef::new()
+    };
+    let mut goal_fixture = b2::FixtureDef {
+        density: 0.0,
+        is_sensor: true,
+        .. b2::FixtureDef::new()
+    };
+ 
+    let goal_handle = world.create_body(&goal_def);
+    let goal_fixture_handle;
+
+    {
+        let mut body = world.body_mut(goal_handle);
+
+        let shape = b2::CircleShape::new_with(Vec2::from([0.0, 0.0]), GOAL_RADIUS);
+        goal_fixture_handle = body.create_fixture(&shape, &mut goal_fixture);
+    }
+
     // Create walls
-    let mut wall_def = b2::BodyDef {
+    let wall_def = b2::BodyDef {
         position: b2::Vec2 { x: 0.0, y: 0.0 },
         .. b2::BodyDef::new()
     };
@@ -156,10 +195,10 @@ fn main() {
                 Event::MouseMotion{x, y, ..} => {
                 }
 
-                Event::MouseButtonDown{mouse_btn, x, y, ..} => {
+                Event::MouseButtonDown{mouse_btn, ..} => {
                 }
 
-                Event::MouseButtonUp{mouse_btn, ..} => {
+                Event::MouseButtonUp{..} => {
                 }
 
                 _ => {}
@@ -185,9 +224,23 @@ fn main() {
         }
 
         for contact in world.contacts() {
-            let manifold = contact.world_manifold();
-            let mut body = world.body_mut(body_handle);
-            body.apply_force(&manifold.normal, &manifold.points[0], true);
+            let (body_a, fixture_a) = contact.fixture_a();
+            let (body_b, fixture_b) = contact.fixture_b();
+
+            let body_contact = (body_a == body_handle || body_b == body_handle);
+            let goal_contact = (body_a == goal_handle || body_b == goal_handle);
+
+            if contact.is_touching() {
+
+                if body_contact && goal_contact {
+                    // reached goal
+                } else if body_contact {
+                    let manifold = contact.world_manifold();
+                    let mut body = world.body_mut(body_handle);
+                    let normalize_normal = manifold.normal / manifold.normal.norm();
+                    body.apply_force(&normalize_normal, &manifold.points[0], true);
+                }
+            }
         }
 
         canvas.set_draw_color(black);
@@ -200,9 +253,7 @@ fn main() {
         };
 
         canvas.set_draw_color(white);
-        let body_pos = body.position();
         let fixture = body.fixture(fixture_handle);
-        let shape_type = fixture.shape_type();
         let shape = fixture.shape();
         match &*shape {
             UnknownShape::Polygon(polygon) => {
@@ -213,7 +264,7 @@ fn main() {
                     let vertex = body_transform.mul(*polygon.vertex(index));
 
                     let point = sdl2_point(vertex);
-                    canvas.draw_line(prev_point, point);
+                    canvas.draw_line(prev_point, point).unwrap();
                     prev_point = point;
                 }
 
@@ -235,10 +286,10 @@ fn main() {
                                                    y: left_point.y + -left_force.y });
         let sdl_force_right = sdl2_point(b2::Vec2 { x: right_point.x + -right_force.x,
                                                     y: right_point.y + -right_force.y });
-        canvas.draw_point(sdl_left);
-        canvas.draw_point(sdl_right);
-        canvas.draw_line(sdl_left, sdl_force_left);
-        canvas.draw_line(sdl_right, sdl_force_right);
+        canvas.draw_point(sdl_left).unwrap();
+        canvas.draw_point(sdl_right).unwrap();
+        canvas.draw_line(sdl_left, sdl_force_left).unwrap();
+        canvas.draw_line(sdl_right, sdl_force_right).unwrap();
 
         // draw edge
         for wall_point in wall_points.windows(2) {
@@ -246,8 +297,30 @@ fn main() {
             let wall_end = wall_point[1];
             let edge_start = sdl2_point(wall_start);
             let edge_end = sdl2_point(wall_end);
-            canvas.draw_line(edge_start, edge_end);
+            canvas.draw_line(edge_start, edge_end).unwrap();
         }
+
+
+        canvas.set_draw_color(red);
+
+        let goal_body = world.body(goal_handle);
+        let goal_transform = Transform {
+            pos: *goal_body.position(),
+            rot: Rot::from_angle(goal_body.angle()),
+        };
+
+        let fixture = goal_body.fixture(goal_fixture_handle);
+        let shape = fixture.shape();
+        match &*shape {
+            UnknownShape::Circle(circle) => {
+                draw_circle(&mut canvas, *goal_body.position(), circle.radius(), 20);
+            }
+
+            _ => panic!("Unexpected shape"),
+        }
+
+        let goal_point = sdl2_point(*goal_body.position());
+        canvas.draw_point(goal_point).unwrap();
 
         canvas.present();
 
