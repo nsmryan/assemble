@@ -3,6 +3,7 @@ mod throttler;
 use std::time::Duration;
 use std::ops::Mul;
 use std::f32;
+use std::cmp;
 
 use sdl2::event::Event;
 use sdl2::rect::{Rect, Point};
@@ -23,6 +24,7 @@ const SCREEN_HEIGHT: u32 = 600;
 
 const ZOOM: f32 = 40.0;
 const GOAL_RADIUS: f32 = 0.5;
+const BODY_RADIUS: f32 = 0.5;
 
 const WORLD_WIDTH: f32 = SCREEN_WIDTH as f32 / ZOOM;
 const WORLD_HEIGHT: f32 = SCREEN_HEIGHT as f32 / ZOOM;
@@ -74,6 +76,10 @@ fn main() {
     let linear_damping = 0.97;
     let angular_damping = 0.97;
 
+    let mut goal_angle = 0.0;
+    let mut goal_distance = 0.0;
+    let mut score = 0.0;
+
     let gravity = b2::Vec2 { x: 0.0, y: 0.0 };
     let mut world = b2::World::<NoUserData>::new(&gravity);
 
@@ -100,7 +106,7 @@ fn main() {
     {
         let mut body = world.body_mut(body_handle);
             
-        let shape = b2::PolygonShape::new_box(0.5, 0.5);
+        let shape = b2::PolygonShape::new_box(BODY_RADIUS, BODY_RADIUS);
         fixture_handle = body.create_fixture(&shape, &mut body_fixture);
     }
 
@@ -205,7 +211,40 @@ fn main() {
             }
         }
 
-        world.step(TIME_STEP, VELOCITY_ITERATIONS, POSITION_ITERATIONS);
+        // World update
+        {
+            let mut body = world.body_mut(body_handle);
+            let mut goal_body = world.body_mut(goal_handle);
+
+            let goal_pos = goal_body.position() - body.position();
+            let to_goal_angle = f32::atan2(goal_pos.y, goal_pos.x);
+            let body_angle = body.angle();
+
+            let goal_to_body = body_angle - to_goal_angle;
+            let body_to_goal = to_goal_angle - body_angle;
+            if goal_to_body.abs() < body_to_goal.abs() {
+                goal_angle = goal_to_body;
+            } else {
+                goal_angle = body_to_goal;
+            }
+
+            goal_angle -= (f32::consts::PI / 2.0);
+            goal_angle *= -1.0;
+
+            goal_distance = (body.position() - goal_body.position()).norm();
+            goal_distance -= GOAL_RADIUS;
+            goal_distance -= BODY_RADIUS;
+
+            if goal_distance != 0.0 {
+                let denom = if goal_distance.abs() > 1.0 {
+                    goal_distance.abs() 
+                } else {
+                    1.0
+                };
+
+                score += 1.0 / denom;
+            }
+        }
 
         let left_force;
         let right_force;
@@ -243,6 +282,9 @@ fn main() {
             }
         }
 
+        world.step(TIME_STEP, VELOCITY_ITERATIONS, POSITION_ITERATIONS);
+
+        // Drawing
         canvas.set_draw_color(black);
         canvas.clear();
 
