@@ -24,6 +24,9 @@ const SQUARE_HEIGHT: u32 = 1;
 
 const ZOOM: f32 = 40.0;
 
+const WORLD_WIDTH: f32 = SCREEN_WIDTH as f32 / ZOOM;
+const WORLD_HEIGHT: f32 = SCREEN_HEIGHT as f32 / ZOOM;
+
 const TIME_STEP: f32 = 1.0 / 30.0;
 const VELOCITY_ITERATIONS: i32 = 8;
 const POSITION_ITERATIONS: i32 = 3;
@@ -51,6 +54,7 @@ fn main() {
     let mut force_x = 0.0;
     let mut force_y = 0.0;
     let mut linear_damping = 0.97;
+    let mut angular_damping = 0.97;
 
     let gravity = b2::Vec2 { x: 0.0, y: 0.0 };
     let mut world = b2::World::<NoUserData>::new(&gravity);
@@ -58,18 +62,58 @@ fn main() {
     let mut def = b2::BodyDef {
         body_type: b2::BodyType::Dynamic,
         position: b2::Vec2 { x: start_pos.0 as f32, y: start_pos.1 as f32 },
-        linear_damping: linear_damping,
+        linear_damping,
+        angular_damping,
         .. b2::BodyDef::new()
     };
 
+    // Create ship
     let body_handle = world.create_body(&def);
+    let mut body_fixture = b2::FixtureDef {
+        friction: 1.0,
+        restitution: 1.0,
+        density: 1.0,
+        is_sensor: false,
+        .. b2::FixtureDef::new()
+    };
+
     let fixture_handle;
  
     {
         let mut body = world.body_mut(body_handle);
-
+            
         let shape = b2::PolygonShape::new_box(0.5, 0.5);
-        fixture_handle = body.create_fast_fixture(&shape, 2.0);
+        fixture_handle = body.create_fixture(&shape, &mut body_fixture);
+    }
+
+    // Create walls
+    let mut wall_def = b2::BodyDef {
+        position: b2::Vec2 { x: 0.0, y: 0.0 },
+        .. b2::BodyDef::new()
+    };
+    let mut wall_fixture = b2::FixtureDef {
+        restitution: 1.4,
+        density: 0.0,
+        is_sensor: false,
+        .. b2::FixtureDef::new()
+    };
+ 
+    let wall_edge = 0.5;
+    let wall_points = [Vec2::from([wall_edge, wall_edge]),
+                       Vec2::from([WORLD_WIDTH - wall_edge, wall_edge]),
+                       Vec2::from([WORLD_WIDTH - wall_edge, WORLD_HEIGHT - wall_edge]),
+                       Vec2::from([wall_edge, WORLD_HEIGHT - wall_edge]),
+                       Vec2::from([wall_edge, wall_edge])];
+
+    for wall_points in wall_points.windows(2) {
+        let wall_start = wall_points[0];
+        let wall_end = wall_points[1];
+
+        let wall_handle = world.create_body(&wall_def);
+        let mut body = world.body_mut(wall_handle);
+
+        let shape = b2::EdgeShape::new_with(&wall_start, &wall_end);
+        body.create_fixture(&shape, &mut wall_fixture);
     }
 
     let throttler = Throttler::new(Duration::from_millis(1000 / 30));
@@ -95,6 +139,9 @@ fn main() {
                     if keycode == Some(Keycode::S) {
                         force_y = 1.0;
                     }
+                    if keycode == Some(Keycode::Q) {
+                        running = false;
+                    }
                 }
 
                 Event::KeyUp{keycode, keymod, ..} => {
@@ -107,7 +154,6 @@ fn main() {
                 }
 
                 Event::MouseMotion{x, y, ..} => {
-                    //linear_damping = (x as f32 / SCREEN_WIDTH as f32);
                 }
 
                 Event::MouseButtonDown{mouse_btn, x, y, ..} => {
@@ -120,14 +166,16 @@ fn main() {
             }
         }
 
+        world.step(TIME_STEP, VELOCITY_ITERATIONS, POSITION_ITERATIONS);
+
         let left_force;
         let right_force;
         let left_point;
         let right_point;
         {
             let mut body = world.body_mut(body_handle);
-            left_force = body.world_vector(&b2::Vec2 { x: 0.0, y: 1.0 * force_x });
-            right_force = body.world_vector(&b2::Vec2 { x: 0.0, y: 1.0 * force_y });
+            left_force = body.world_vector(&b2::Vec2 { x: 0.0, y: 2.0 * force_x });
+            right_force = body.world_vector(&b2::Vec2 { x: 0.0, y: 2.0 * force_y });
             left_point = body.world_point(&b2::Vec2 { x: -0.5, y: -0.5 });
             right_point = body.world_point(&b2::Vec2 { x: 0.5, y: -0.5 });
 
@@ -136,7 +184,11 @@ fn main() {
             body.apply_force(&right_force, &right_point, true);
         }
 
-        world.step(TIME_STEP, VELOCITY_ITERATIONS, POSITION_ITERATIONS);
+        for contact in world.contacts() {
+            let manifold = contact.world_manifold();
+            let mut body = world.body_mut(body_handle);
+            body.apply_force(&manifold.normal, &manifold.points[0], true);
+        }
 
         canvas.set_draw_color(black);
         canvas.clear();
@@ -155,12 +207,10 @@ fn main() {
         match &*shape {
             UnknownShape::Polygon(polygon) => {
                 let first_vertex = body_transform.mul(*polygon.vertex(0));
-                //let first_vertex = first_vertex + body.position();
                 let first_point = sdl2_point(first_vertex);;
                 let mut prev_point = first_point;
                 for index in 0..polygon.vertex_count() {
                     let vertex = body_transform.mul(*polygon.vertex(index));
-                    //let vertex = vertex + body.position();
 
                     let point = sdl2_point(vertex);
                     canvas.draw_line(prev_point, point);
@@ -182,13 +232,22 @@ fn main() {
 
         canvas.set_draw_color(green);
         let sdl_force_left = sdl2_point(b2::Vec2 { x: left_point.x + -left_force.x,
-                                              y: left_point.y + -left_force.y });
+                                                   y: left_point.y + -left_force.y });
         let sdl_force_right = sdl2_point(b2::Vec2 { x: right_point.x + -right_force.x,
-                                                       y: right_point.y + -right_force.y });
+                                                    y: right_point.y + -right_force.y });
         canvas.draw_point(sdl_left);
         canvas.draw_point(sdl_right);
         canvas.draw_line(sdl_left, sdl_force_left);
         canvas.draw_line(sdl_right, sdl_force_right);
+
+        // draw edge
+        for wall_point in wall_points.windows(2) {
+            let wall_start = wall_point[0];
+            let wall_end = wall_point[1];
+            let edge_start = sdl2_point(wall_start);
+            let edge_end = sdl2_point(wall_end);
+            canvas.draw_line(edge_start, edge_end);
+        }
 
         canvas.present();
 
